@@ -56,15 +56,20 @@ type folder struct {
 	ID    core.InstanceID `json:"_id"`
 	Owner string
 	Files []file
+	Dirs  []dir
+}
+
+type dir struct {
+	ID   core.InstanceID `json:"_id"`
+	Path string
 }
 
 type file struct {
-	ID               core.InstanceID `json:"_id"`
-	FileRelativePath string
-	CID              string
+	ID   core.InstanceID `json:"_id"`
+	Path string
+	CID  string
 
-	IsDirectory bool
-	Files       []file
+	//Files       []file
 }
 
 type client struct {
@@ -211,7 +216,7 @@ func (c *client) getOrCreateMyFolderInstance(path string) (*folder, error) {
 	}
 
 	if len(res) == 0 {
-		ownFolder := folder{ID: core.NewInstanceID(), Owner: c.name, Files: []file{}}
+		ownFolder := folder{ID: core.NewInstanceID(), Owner: c.name, Files: []file{}, Dirs: []dir{}}
 		jsn := util.JSONFromInstance(ownFolder)
 		_, err := c.collection.Create(jsn)
 		if err != nil {
@@ -251,11 +256,19 @@ func (c *client) startListeningExternalChanges() error {
 				uf := &folder{}
 				util.InstanceFromJSON(instanceBytes, uf)
 				log.Infof("%s: detected new file %s of user %s", c.name, a.ID, uf.Owner)
-				for _, f := range uf.Files {
-					if err := c.ensureCID(c.fullPath(f), f.CID); err != nil {
-						log.Warnf("%s: error ensuring file %s: %v", c.name, c.fullPath(f), err)
+
+				for _, d := range uf.Dirs {
+					if err := os.MkdirAll(c.dirPath(d), 0700); err != nil {
+						log.Warnf("%s: error ensuring file %s: %v", c.name, c.dirPath(d), err)
 					}
 				}
+
+				for _, f := range uf.Files {
+					if err := c.ensureCID(c.filePath(f), f.CID); err != nil {
+						log.Warnf("%s: error ensuring file %s: %v", c.name, c.filePath(f), err)
+					}
+				}
+
 				if folders, err := c.getDirectoryTree(); err == nil {
 					printTree(folders)
 				}
@@ -273,23 +286,43 @@ func (c *client) startFSWatcher() error {
 	}
 	c.folderInstance = myFolder
 
-	w, err := watcher.New(myFolderPath, func(fileName string) error {
-		f, err := os.Open(fileName)
-		if err != nil {
+	w, err := watcher.New(myFolderPath, func(mntPath string) error {
+		if st, err := os.Stat(mntPath); err != nil {
 			log.Error(err)
 			return err
-		}
-		n, err := c.peer.AddFile(context.Background(), f, nil)
-		if err != nil {
-			log.Error(err)
-			return err
-		}
+		} else if st.Mode().IsDir() {
+			path := strings.TrimPrefix(mntPath, c.folderPath)
+			path = strings.TrimLeft(path, "/")
+			newDir := dir{ID: core.NewInstanceID(), Path: path}
+			log.Infof("ID: %v", newDir.ID)
+			c.folderInstance.Dirs = append(c.folderInstance.Dirs, newDir)
+			return c.collection.Save(util.JSONFromInstance(c.folderInstance))
 
-		fileRelPath := strings.TrimPrefix(fileName, c.folderPath)
-		fileRelPath = strings.TrimLeft(fileRelPath, "/")
-		newFile := file{ID: core.NewInstanceID(), FileRelativePath: fileRelPath, CID: n.Cid().String(), Files: []file{}}
-		c.folderInstance.Files = append(c.folderInstance.Files, newFile)
-		return c.collection.Save(util.JSONFromInstance(c.folderInstance))
+			//err := fmt.Errorf("not support filetype %v", st.Mode())
+			//return err
+		} else if st.Mode().IsRegular() {
+			f, err := os.Open(mntPath)
+			if err != nil {
+				log.Error(err)
+				return err
+			}
+
+			n, err := c.peer.AddFile(context.Background(), f, nil)
+			if err != nil {
+				log.Error(err)
+				return err
+			}
+
+			path := strings.TrimPrefix(mntPath, c.folderPath)
+			path = strings.TrimLeft(path, "/")
+			newFile := file{ID: core.NewInstanceID(), Path: path, CID: n.Cid().String()}
+			log.Infof("ID: %v", newFile.ID)
+			c.folderInstance.Files = append(c.folderInstance.Files, newFile)
+			return c.collection.Save(util.JSONFromInstance(c.folderInstance))
+		} else {
+			err := fmt.Errorf("not support filetype %v", st.Mode())
+			return err
+		}
 	})
 	if err != nil {
 		return fmt.Errorf("error when creating fs watcher for %v: %v", c.name, err)
@@ -340,8 +373,12 @@ func (c *client) getDirectoryTree() ([]*folder, error) {
 	return folders, nil
 }
 
-func (c *client) fullPath(f file) string {
-	return filepath.Join(c.folderPath, f.FileRelativePath)
+func (c *client) dirPath(d dir) string {
+	return filepath.Join(c.folderPath, d.Path)
+}
+
+func (c *client) filePath(f file) string {
+	return filepath.Join(c.folderPath, f.Path)
 }
 
 func (c *client) ensureCID(fullPath, cidStr string) error {
@@ -417,7 +454,10 @@ func printTree(folders []*folder) {
 	for _, sf := range folders {
 		fmt.Printf("\t%s %s\n", sf.ID, sf.Owner)
 		for _, f := range sf.Files {
-			fmt.Printf("\t\t %s %s\n", f.FileRelativePath, f.CID)
+			fmt.Printf("\t\t %s %s\n", f.Path, f.CID)
+		}
+		for _, f := range sf.Dirs {
+			fmt.Printf("\t\t %s\n", f.Path)
 		}
 	}
 	fmt.Println()
