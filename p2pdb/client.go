@@ -48,23 +48,17 @@ var (
 )
 
 type folder struct {
+	ID     core.InstanceID `json:"_id"`
+	Owner  string
+	Inodes []inode
+}
+
+type inode struct {
 	ID    core.InstanceID `json:"_id"`
-	Owner string
-	Files []file
-	Dirs  []dir
-}
-
-type dir struct {
-	ID   core.InstanceID `json:"_id"`
-	Path string
-}
-
-type file struct {
-	ID   core.InstanceID `json:"_id"`
-	Path string
-	CID  string
-
-	//Files       []file
+	Path  string
+	CID   string
+	IsDir bool
+	//stat
 }
 
 type Client struct {
@@ -81,6 +75,14 @@ type Client struct {
 	net            net.Net
 	peer           *ipfslite.Peer
 	closeCh        chan struct{}
+}
+
+func newClient(whoami, mount, repo, host, taddr, tid, tkey string) (*Client, error) {
+	if tid != "" && tkey != "" && taddr != "" {
+		return newJoinerClient(whoami, mount, repo, host, taddr, tid, tkey)
+	} else {
+		return newRootClient(whoami, mount, repo, host)
+	}
 }
 
 func newRootClient(name, folderPath, repoPath, host string) (*Client, error) {
@@ -112,25 +114,20 @@ func newRootClient(name, folderPath, repoPath, host string) (*Client, error) {
 	}, nil
 }
 
-func newJoinerClient(name, folderPath, repoPath, host, taddr, tid, tkey string) (*Client, error) {
+func newJoinerClient2(name, folderPath, repoPath, host string, addr ma.Multiaddr, key thread.Key) (*Client, error) {
 	network, err := newNetwork(repoPath, host)
 	if err != nil {
 		return nil, err
 	}
 
-	addr, err := ma.NewMultiaddr(taddr + "/thread/" + tid)
-	if err != nil {
-		log.Error(err)
-		return nil, err
+	saddr := addr.String()
+	for i := 0; i < len(saddr)-len("/thread"); i++ {
+		if saddr[i:i+7] == "/thread" {
+			saddr = saddr[:i]
+			break
+		}
 	}
-
-	key, err := thread.KeyFromString(tkey)
-	if err != nil {
-		log.Error(err)
-		return nil, err
-	}
-
-	bootstrapPeers, err := config.ParseBootstrapPeers([]string{taddr})
+	bootstrapPeers, err := config.ParseBootstrapPeers([]string{saddr})
 	if err != nil {
 		log.Error(err)
 		return nil, err
@@ -160,6 +157,23 @@ func newJoinerClient(name, folderPath, repoPath, host, taddr, tid, tkey string) 
 		peer:       network.GetIpfsLite(),
 		closeCh:    make(chan struct{}),
 	}, nil
+
+}
+
+func newJoinerClient(name, folderPath, repoPath, host, taddr, tid, tkey string) (*Client, error) {
+	addr, err := ma.NewMultiaddr(taddr + "/thread/" + tid)
+	if err != nil {
+		log.Error(err)
+		return nil, err
+	}
+
+	key, err := thread.KeyFromString(tkey)
+	if err != nil {
+		log.Error(err)
+		return nil, err
+	}
+
+	return newJoinerClient2(name, folderPath, repoPath, host, addr, key)
 }
 
 func freeLocalAddr(ip string) ma.Multiaddr {
@@ -211,7 +225,7 @@ func (c *Client) getOrCreateMyFolderInstance(path string) (*folder, error) {
 	}
 
 	if len(res) == 0 {
-		ownFolder := folder{ID: core.NewInstanceID(), Owner: c.name, Files: []file{}, Dirs: []dir{}}
+		ownFolder := folder{ID: core.NewInstanceID(), Owner: c.name, Inodes: []inode{}}
 		jsn := util.JSONFromInstance(ownFolder)
 		_, err := c.collection.Create(jsn)
 		if err != nil {
@@ -252,15 +266,17 @@ func (c *Client) startListeningExternalChanges() error {
 				util.InstanceFromJSON(instanceBytes, uf)
 				log.Infof("%s: detected new file %s of user %s", c.name, a.ID, uf.Owner)
 
-				for _, d := range uf.Dirs {
-					if err := os.MkdirAll(c.dirPath(d), 0700); err != nil {
-						log.Warnf("%s: error ensuring file %s: %v", c.name, c.dirPath(d), err)
-					}
-				}
-
-				for _, f := range uf.Files {
-					if err := c.ensureCID(c.filePath(f), f.CID); err != nil {
-						log.Warnf("%s: error ensuring file %s: %v", c.name, c.filePath(f), err)
+				// TODO: how to just grab change
+				for _, n := range uf.Inodes {
+					p := c.fullPath(n)
+					if n.IsDir {
+						if err := os.MkdirAll(p, 0700); err != nil {
+							log.Warnf("%s: error ensuring file %s: %v", c.name, p, err)
+						}
+					} else {
+						if err := c.ensureCID(p, n.CID); err != nil {
+							log.Warnf("%s: error ensuring file %s: %v", c.name, p, err)
+						}
 					}
 				}
 
@@ -288,9 +304,9 @@ func (c *Client) startFSWatcher() error {
 		} else if st.Mode().IsDir() {
 			path := strings.TrimPrefix(mntPath, c.folderPath)
 			path = strings.TrimLeft(path, "/")
-			newDir := dir{ID: core.NewInstanceID(), Path: path}
-			log.Infof("ID: %v", newDir.ID)
-			c.folderInstance.Dirs = append(c.folderInstance.Dirs, newDir)
+			d := inode{ID: core.NewInstanceID(), Path: path, IsDir: true}
+			log.Debugf("ID: %v", d.ID)
+			c.folderInstance.Inodes = append(c.folderInstance.Inodes, d)
 			return c.collection.Save(util.JSONFromInstance(c.folderInstance))
 
 			//err := fmt.Errorf("not support filetype %v", st.Mode())
@@ -310,9 +326,9 @@ func (c *Client) startFSWatcher() error {
 
 			path := strings.TrimPrefix(mntPath, c.folderPath)
 			path = strings.TrimLeft(path, "/")
-			newFile := file{ID: core.NewInstanceID(), Path: path, CID: n.Cid().String()}
-			log.Infof("ID: %v", newFile.ID)
-			c.folderInstance.Files = append(c.folderInstance.Files, newFile)
+			newFile := inode{ID: core.NewInstanceID(), Path: path, CID: n.Cid().String()}
+			log.Debugf("ID: %v", newFile.ID)
+			c.folderInstance.Inodes = append(c.folderInstance.Inodes, newFile)
 			return c.collection.Save(util.JSONFromInstance(c.folderInstance))
 		} else {
 			err := fmt.Errorf("not support filetype %v", st.Mode())
@@ -368,12 +384,8 @@ func (c *Client) getDirectoryTree() ([]*folder, error) {
 	return folders, nil
 }
 
-func (c *Client) dirPath(d dir) string {
-	return filepath.Join(c.folderPath, d.Path)
-}
-
-func (c *Client) filePath(f file) string {
-	return filepath.Join(c.folderPath, f.Path)
+func (c *Client) fullPath(n inode) string {
+	return filepath.Join(c.folderPath, n.Path)
 }
 
 func (c *Client) ensureCID(fullPath, cidStr string) error {
@@ -448,31 +460,19 @@ func printTree(folders []*folder) {
 	fmt.Printf("Tree of client \n")
 	for _, sf := range folders {
 		fmt.Printf("\t%s %s\n", sf.ID, sf.Owner)
-		for _, f := range sf.Files {
+		for _, f := range sf.Inodes {
 			fmt.Printf("\t\t %s %s\n", f.Path, f.CID)
-		}
-		for _, f := range sf.Dirs {
-			fmt.Printf("\t\t %s\n", f.Path)
 		}
 	}
 	fmt.Println()
 }
 
 func Connect(whoami, mount, repo, host, taddr, tid, tkey string) error {
-	var c *Client
-	if tid != "" && tkey != "" && taddr != "" {
-		var err error
-		c, err = newJoinerClient(whoami, mount, repo, host, taddr, tid, tkey)
-		if err != nil {
-			return err
-		}
-	} else {
-		var err error
-		c, err = newRootClient(whoami, mount, repo, host)
-		if err != nil {
-			return err
-		}
+	c, err := newClient(whoami, mount, repo, host, taddr, tid, tkey)
+	if err != nil {
+		return err
 	}
+
 	info, _ := c.getDBInfo()
 	log.Infof("owner: %s", whoami)
 	log.Infof("mnt: %s", mount)
