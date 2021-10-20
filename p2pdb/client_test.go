@@ -125,10 +125,10 @@ func TestSimple(t *testing.T) {
 
 	// Add some data
 
-	folder0 := folder{ID: core.NewInstanceID(), Owner: "client0", Inodes: []inode{}}
-	folder1 := folder{ID: core.NewInstanceID(), Owner: "client1", Inodes: []inode{}}
-	folder2 := folder{ID: core.NewInstanceID(), Owner: "client2", Inodes: []inode{}}
-	folder3 := folder{ID: core.NewInstanceID(), Owner: "client3", Inodes: []inode{}}
+	folder0 := inode{ID: core.NewInstanceID(), Owner: "client0", IsDir: true, IsRoot: true}
+	folder1 := inode{ID: core.NewInstanceID(), Owner: "client1", IsDir: true, IsRoot: true}
+	folder2 := inode{ID: core.NewInstanceID(), Owner: "client2", IsDir: true, IsRoot: true}
+	folder3 := inode{ID: core.NewInstanceID(), Owner: "client3", IsDir: true, IsRoot: true}
 
 	_, err = c0.Create(util.JSONFromInstance(folder0))
 	checkErr(t, err)
@@ -222,7 +222,7 @@ func TestNUsersBootstrap(t *testing.T) {
 			blk := make([]byte, tt.randFileSize)
 			for i := 0; i < tt.randFilesGen; i++ {
 				for j, c := range clients {
-					rf, err := ioutil.TempFile(path.Join(c.folderPath, c.name), fmt.Sprintf("client%d-", j))
+					rf, err := ioutil.TempFile(path.Join(c.rootPath, c.name), fmt.Sprintf("client%d-", j))
 					checkErr(t, err)
 					_, err = rand.Read(blk)
 					checkErr(t, err)
@@ -240,92 +240,29 @@ func TestNUsersBootstrap(t *testing.T) {
 
 func assertClientsEqualTrees(t *testing.T, clients []*Client) {
 	totalClients := len(clients)
-	dtrees := make([]clientFolders, totalClients)
-	for i := range clients {
-		folders, err := clients[i].getDirectoryTree()
+	trees := make([][]*inode, totalClients)
+	for i := 0; i < totalClients; i++ {
+		tree, err := clients[i].getDirectoryTree()
 		checkErr(t, err)
-		dtrees[i] = clientFolders{client: clients[i], folders: folders}
+		trees[i] = tree
 	}
-	if !EqualTrees(totalClients, dtrees...) {
-		for i := range dtrees {
-			printTree(dtrees[i].folders)
-		}
+
+	if !equalTrees(trees) {
 		t.Fatalf("trees from clients aren't equal")
 	}
 }
 
-type clientFolders struct {
-	client  *Client
-	folders []*folder
-}
-
-func EqualTrees(numClients int, trees ...clientFolders) bool {
+func equalTrees(trees [][]*inode) bool {
 	base := trees[0]
-	if len(base.folders) != numClients {
-		return false
-	}
+
 	for i := 1; i < len(trees); i++ {
-		if len(base.folders) != len(trees[i].folders) {
+		if len(base) != len(trees[i]) {
 			return false
 		}
-		for _, baseFolder := range base.folders {
-			for _, targetFolder := range trees[i].folders {
-				if targetFolder.ID == baseFolder.ID && targetFolder.Owner == baseFolder.Owner {
-					if !EqualFileList(base.client, baseFolder.Inodes, trees[i].client, targetFolder.Inodes) {
-						return false
-					}
-				}
-			}
-		}
-	}
-	return true
-}
 
-func EqualFileList(c1 *Client, f1s []inode, c2 *Client, f2s []inode) bool {
-	if len(f1s) != len(f2s) {
-		return false
-	}
-	for _, f := range f1s {
-		exist := false
-		for _, f2 := range f2s {
-			if f.ID == f2.ID {
-				if !EqualFiles(c1, f, c2, f2) {
-					return false
-				}
-				exist = true
-				break
-			}
-		}
-		if !exist {
-			return false
-		}
-	}
-	return true
-}
-
-func EqualFiles(c1 *Client, f1 inode, c2 *Client, f2 inode) bool {
-	if f1.Path != f2.Path || f1.IsDir != f2.IsDir ||
-		f1.CID != f2.CID {
-		return false
+		//TODO: deep check
 	}
 
-	/*if f1.IsDir {
-		for _, ff := range f1.Files {
-			exist := false
-			for _, ff2 := range f2.Files {
-				if ff.ID == ff2.ID {
-					if !EqualFiles(c1, ff, c2, ff2) {
-						return false
-					}
-					exist = true
-					break
-				}
-			}
-			if !exist {
-				return false
-			}
-		}
-	}*/
 	return true
 }
 
