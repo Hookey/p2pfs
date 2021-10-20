@@ -41,40 +41,37 @@ var (
 
 	cc = db.CollectionConfig{
 		Name:   collectionName,
-		Schema: util.SchemaFromInstance(folder{}, false),
+		Schema: util.SchemaFromInstance(inode{}, false),
 	}
 
 	errClientAlreadyStarted = errors.New("client already started")
 )
 
-type folder struct {
+//TODO: determine to use object-like or tree-like schema
+type inode struct {
 	ID     core.InstanceID `json:"_id"`
 	Owner  string
-	Inodes []inode
-}
-
-type inode struct {
-	ID    core.InstanceID `json:"_id"`
-	Path  string
-	CID   string
-	IsDir bool
-	//stat
+	Path   string
+	CID    string
+	IsDir  bool
+	IsRoot bool
+	//TODO stat, ACL
 }
 
 type Client struct {
 	sync.Mutex
-	wg             sync.WaitGroup
-	started        bool
-	closed         bool
-	name           string
-	folderPath     string
-	folderInstance *folder
-	store          kt.TxnDatastoreExtended
-	db             *db.DB
-	collection     *db.Collection
-	net            net.Net
-	peer           *ipfslite.Peer
-	closeCh        chan struct{}
+	wg         sync.WaitGroup
+	started    bool
+	closed     bool
+	name       string
+	rootPath   string
+	root       *inode
+	store      kt.TxnDatastoreExtended
+	db         *db.DB
+	collection *db.Collection
+	net        net.Net
+	peer       *ipfslite.Peer
+	closeCh    chan struct{}
 }
 
 func newClient(whoami, mount, repo, host, taddr, tid, tkey string) (*Client, error) {
@@ -104,7 +101,7 @@ func newRootClient(name, folderPath, repoPath, host string) (*Client, error) {
 
 	return &Client{
 		name:       name,
-		folderPath: folderPath,
+		rootPath:   folderPath,
 		db:         d,
 		store:      s,
 		collection: d.GetCollection(collectionName),
@@ -149,7 +146,7 @@ func newJoinerClient2(name, folderPath, repoPath, host string, addr ma.Multiaddr
 
 	return &Client{
 		name:       name,
-		folderPath: folderPath,
+		rootPath:   folderPath,
 		db:         d,
 		store:      s,
 		collection: d.GetCollection(collectionName),
@@ -210,22 +207,23 @@ func (c *Client) getDBInfo() (db.Info, error) {
 	return info, nil
 }
 
-func (c *Client) getOrCreateMyFolderInstance(path string) (*folder, error) {
+// TODO: when create a new client to a existing thread, should sync db first.
+func (c *Client) getOrCreateRoot(path string) (*inode, error) {
 	if _, err := os.Stat(path); os.IsNotExist(err) {
 		if err = os.MkdirAll(path, os.ModePerm); err != nil {
 			return nil, err
 		}
 	}
 
-	var myFolder *folder
+	var myFolder *inode
 
-	res, err := c.collection.Find(db.Where("Owner").Eq(c.name))
+	res, err := c.collection.Find(db.Where("Owner").Eq(c.name).And("IsRoot").Eq(true))
 	if err != nil {
 		return nil, err
 	}
 
 	if len(res) == 0 {
-		ownFolder := folder{ID: core.NewInstanceID(), Owner: c.name, Inodes: []inode{}}
+		ownFolder := inode{ID: core.NewInstanceID(), Owner: c.name, IsDir: true, IsRoot: true}
 		jsn := util.JSONFromInstance(ownFolder)
 		_, err := c.collection.Create(jsn)
 		if err != nil {
@@ -233,7 +231,7 @@ func (c *Client) getOrCreateMyFolderInstance(path string) (*folder, error) {
 		}
 		myFolder = &ownFolder
 	} else {
-		ownFolder := &folder{}
+		ownFolder := &inode{}
 		if err := json.Unmarshal(res[0], ownFolder); err != nil {
 			return nil, err
 		}
@@ -262,26 +260,23 @@ func (c *Client) startListeningExternalChanges() error {
 					log.Errorf("error when getting changed user folder with ID %v: %v", a.ID, err)
 					continue
 				}
-				uf := &folder{}
-				util.InstanceFromJSON(instanceBytes, uf)
-				log.Infof("%s: detected new file %s of user %s", c.name, a.ID, uf.Owner)
+				n := &inode{}
+				util.InstanceFromJSON(instanceBytes, n)
+				log.Infof("%s: detected new file %s of user %s", c.name, a.ID, n.Owner)
 
-				// TODO: how to just grab change
-				for _, n := range uf.Inodes {
-					p := c.fullPath(n)
-					if n.IsDir {
-						if err := os.MkdirAll(p, 0700); err != nil {
-							log.Warnf("%s: error ensuring file %s: %v", c.name, p, err)
-						}
-					} else {
-						if err := c.ensureCID(p, n.CID); err != nil {
-							log.Warnf("%s: error ensuring file %s: %v", c.name, p, err)
-						}
+				p := c.fullPath(n)
+				if n.IsDir {
+					if err := os.MkdirAll(p, 0700); err != nil {
+						log.Warnf("%s: error ensuring file %s: %v", c.name, p, err)
+					}
+				} else {
+					if err := c.ensureCID(p, n.CID); err != nil {
+						log.Warnf("%s: error ensuring file %s: %v", c.name, p, err)
 					}
 				}
 
-				if folders, err := c.getDirectoryTree(); err == nil {
-					printTree(folders)
+				if inodes, err := c.getDirectoryTree(); err == nil {
+					printTree(inodes)
 				}
 			}
 		}
@@ -290,46 +285,44 @@ func (c *Client) startListeningExternalChanges() error {
 }
 
 func (c *Client) startFSWatcher() error {
-	myFolderPath := path.Join(c.folderPath, c.name)
-	myFolder, err := c.getOrCreateMyFolderInstance(myFolderPath)
+	myFolderPath := path.Join(c.rootPath, c.name)
+	myFolder, err := c.getOrCreateRoot(myFolderPath)
 	if err != nil {
 		return fmt.Errorf("error when getting folder for %v: %v", c.name, err)
 	}
-	c.folderInstance = myFolder
+	//TODO: c.root may be unnecessary
+	c.root = myFolder
 
 	w, err := watcher.New(myFolderPath, func(mntPath string) error {
 		if st, err := os.Stat(mntPath); err != nil {
 			log.Error(err)
 			return err
 		} else if st.Mode().IsDir() {
-			path := strings.TrimPrefix(mntPath, c.folderPath)
+			path := strings.TrimPrefix(mntPath, c.rootPath)
 			path = strings.TrimLeft(path, "/")
 			d := inode{ID: core.NewInstanceID(), Path: path, IsDir: true}
 			log.Debugf("ID: %v", d.ID)
-			c.folderInstance.Inodes = append(c.folderInstance.Inodes, d)
-			return c.collection.Save(util.JSONFromInstance(c.folderInstance))
-
-			//err := fmt.Errorf("not support filetype %v", st.Mode())
-			//return err
+			_, err = c.collection.Create(util.JSONFromInstance(d))
+			return err
 		} else if st.Mode().IsRegular() {
-			f, err := os.Open(mntPath)
+			fd, err := os.Open(mntPath)
 			if err != nil {
 				log.Error(err)
 				return err
 			}
 
-			n, err := c.peer.AddFile(context.Background(), f, nil)
+			n, err := c.peer.AddFile(context.Background(), fd, nil)
 			if err != nil {
 				log.Error(err)
 				return err
 			}
 
-			path := strings.TrimPrefix(mntPath, c.folderPath)
+			path := strings.TrimPrefix(mntPath, c.rootPath)
 			path = strings.TrimLeft(path, "/")
-			newFile := inode{ID: core.NewInstanceID(), Path: path, CID: n.Cid().String()}
-			log.Debugf("ID: %v", newFile.ID)
-			c.folderInstance.Inodes = append(c.folderInstance.Inodes, newFile)
-			return c.collection.Save(util.JSONFromInstance(c.folderInstance))
+			f := inode{ID: core.NewInstanceID(), Path: path, CID: n.Cid().String()}
+			log.Debugf("ID: %v", f.ID)
+			_, err = c.collection.Create(util.JSONFromInstance(f))
+			return err
 		} else {
 			err := fmt.Errorf("not support filetype %v", st.Mode())
 			return err
@@ -367,25 +360,24 @@ func (c *Client) start() error {
 	return nil
 }
 
-func (c *Client) getDirectoryTree() ([]*folder, error) {
+func (c *Client) getDirectoryTree() ([]*inode, error) {
 	res, err := c.collection.Find(nil)
 	if err != nil {
 		return nil, err
-
 	}
-	folders := make([]*folder, len(res))
+	inodes := make([]*inode, len(res))
 	for i, item := range res {
-		folder := &folder{}
-		if err := json.Unmarshal(item, folder); err != nil {
+		inode := &inode{}
+		if err := json.Unmarshal(item, inode); err != nil {
 			return nil, err
 		}
-		folders[i] = folder
+		inodes[i] = inode
 	}
-	return folders, nil
+	return inodes, nil
 }
 
-func (c *Client) fullPath(n inode) string {
-	return filepath.Join(c.folderPath, n.Path)
+func (c *Client) fullPath(n *inode) string {
+	return filepath.Join(c.rootPath, n.Path)
 }
 
 func (c *Client) ensureCID(fullPath, cidStr string) error {
@@ -452,17 +444,14 @@ func (c *Client) close() error {
 	return nil
 }
 
-func printTree(folders []*folder) {
-	sort.Slice(folders, func(i, j int) bool {
-		return strings.Compare(folders[i].Owner, folders[j].Owner) < 0
+func printTree(inodes []*inode) {
+	sort.Slice(inodes, func(i, j int) bool {
+		return strings.Compare(inodes[i].Path, inodes[j].Path) < 0
 	})
 
 	fmt.Printf("Tree of client \n")
-	for _, sf := range folders {
-		fmt.Printf("\t%s %s\n", sf.ID, sf.Owner)
-		for _, f := range sf.Inodes {
-			fmt.Printf("\t\t %s %s\n", f.Path, f.CID)
-		}
+	for _, n := range inodes {
+		fmt.Printf("\t%s %s\n", n.Path, n.CID)
 	}
 	fmt.Println()
 }
