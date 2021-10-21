@@ -295,19 +295,19 @@ func (c *Client) startFSWatcher() error {
 	//TODO: c.root may be unnecessary
 	c.root = myFolder
 
-	w, err := watcher.New(myFolderPath, func(mntPath string) error {
-		if st, err := os.Stat(mntPath); err != nil {
+	onCreate := func(fullPath string) error {
+		if st, err := os.Stat(fullPath); err != nil {
 			log.Error(err)
 			return err
 		} else if st.Mode().IsDir() {
-			path := strings.TrimPrefix(mntPath, c.rootPath)
+			path := strings.TrimPrefix(fullPath, c.rootPath)
 			path = strings.TrimLeft(path, "/")
 			d := inode{ID: core.NewInstanceID(), Path: path, IsDir: true}
 			log.Debugf("ID: %v", d.ID)
 			_, err = c.collection.Create(util.JSONFromInstance(d))
 			return err
 		} else if st.Mode().IsRegular() {
-			fd, err := os.Open(mntPath)
+			fd, err := os.Open(fullPath)
 			if err != nil {
 				log.Error(err)
 				return err
@@ -319,7 +319,7 @@ func (c *Client) startFSWatcher() error {
 				return err
 			}
 
-			path := strings.TrimPrefix(mntPath, c.rootPath)
+			path := strings.TrimPrefix(fullPath, c.rootPath)
 			path = strings.TrimLeft(path, "/")
 			f := inode{ID: core.NewInstanceID(), Path: path, CID: n.Cid().String()}
 			log.Debugf("ID: %v", f.ID)
@@ -329,7 +329,9 @@ func (c *Client) startFSWatcher() error {
 			err := fmt.Errorf("not support filetype %v", st.Mode())
 			return err
 		}
-	})
+	}
+
+	w, err := watcher.New(myFolderPath, watcher.WithCreateHandler(onCreate))
 	if err != nil {
 		return fmt.Errorf("error when creating fs watcher for %v: %v", c.name, err)
 	}

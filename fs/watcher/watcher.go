@@ -11,11 +11,17 @@ var (
 	log = logging.Logger("watcher")
 )
 
+type Handlers struct {
+	onCreate Handler
+	onDelete Handler
+	onWrite  Handler
+}
+
 type Handler func(fileName string) error
 
 type FolderWatcher struct {
-	w        *fsnotify.Watcher
-	onCreate Handler
+	w *fsnotify.Watcher
+	Handlers
 
 	stopWatch chan struct{}
 	done      chan struct{}
@@ -25,7 +31,31 @@ type FolderWatcher struct {
 	closed  bool
 }
 
-func New(path string, onCreate Handler) (*FolderWatcher, error) {
+// NewHandler specifies a handler in Handlers.
+type NewHandler func(*Handlers)
+
+// WithCreateHandler provides control over create handler to use with a watcher.
+func WithCreateHandler(ch Handler) NewHandler {
+	return func(h *Handlers) {
+		h.onCreate = ch
+	}
+}
+
+// WithDeleteHandler provides control over delete handler to use with a watcher.
+func WithDeleteHandler(dh Handler) NewHandler {
+	return func(h *Handlers) {
+		h.onDelete = dh
+	}
+}
+
+// WithWriteHandler provides control over write handler to use with a watcher.
+func WithWriteHandler(wh Handler) NewHandler {
+	return func(h *Handlers) {
+		h.onWrite = wh
+	}
+}
+
+func New(path string, set ...NewHandler) (*FolderWatcher, error) {
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
 		log.Fatal(err)
@@ -34,12 +64,17 @@ func New(path string, onCreate Handler) (*FolderWatcher, error) {
 		return nil, err
 	}
 
-	return &FolderWatcher{
+	fw := FolderWatcher{
 		w:         watcher,
-		onCreate:  onCreate,
 		stopWatch: make(chan struct{}),
 		done:      make(chan struct{}),
-	}, nil
+	}
+
+	for _, set := range set {
+		set(&fw.Handlers)
+	}
+
+	return &fw, nil
 }
 
 func (fw *FolderWatcher) Close() {
