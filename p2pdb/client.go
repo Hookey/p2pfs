@@ -460,10 +460,10 @@ func printTree(inodes []*inode) {
 	fmt.Println()
 }
 
-func Connect(whoami, mount, repo, host, taddr, tid, tkey string) error {
+func Connect(whoami, mount, repo, host, taddr, tid, tkey string) (func(), error) {
 	c, err := newClient(whoami, mount, repo, host, taddr, tid, tkey)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	info, _ := c.getDBInfo()
@@ -474,7 +474,7 @@ func Connect(whoami, mount, repo, host, taddr, tid, tkey string) error {
 	log.Infof("key: %s", info.Key.String())
 	log.Infof("ID: %s", c.net.Host().ID().String())
 
-	defer func() {
+	return func() {
 		log.Infof("Closing root client %v\n", whoami)
 		err := c.close()
 		if err != nil {
@@ -483,7 +483,5 @@ func Connect(whoami, mount, repo, host, taddr, tid, tkey string) error {
 		os.RemoveAll(repo)
 		os.RemoveAll(mount)
 		log.Infof("Root client %v closed\n", whoami)
-	}()
-
-	return c.start()
+	}, c.start()
 }
