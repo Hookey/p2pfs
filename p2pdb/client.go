@@ -30,7 +30,8 @@ import (
 	"github.com/textileio/go-threads/core/thread"
 	"github.com/textileio/go-threads/db"
 	kt "github.com/textileio/go-threads/db/keytransform"
-	"github.com/textileio/go-threads/integrationtests/foldersync/watcher"
+
+	"example.com/p2pfs/fs/watcher"
 	"github.com/textileio/go-threads/util"
 )
 
@@ -262,14 +263,15 @@ func (c *Client) startListeningExternalChanges() error {
 				}
 				n := &inode{}
 				util.InstanceFromJSON(instanceBytes, n)
-				log.Infof("%s: detected new file %s of user %s", c.name, a.ID, n.Owner)
 
 				p := c.fullPath(n)
 				if n.IsDir {
+					log.Infof("%s: detected new dir %s of user %s", c.name, a.ID, n.Owner)
 					if err := os.MkdirAll(p, 0700); err != nil {
 						log.Warnf("%s: error ensuring file %s: %v", c.name, p, err)
 					}
 				} else {
+					log.Infof("%s: detected new file %s of user %s", c.name, a.ID, n.Owner)
 					if err := c.ensureCID(p, n.CID); err != nil {
 						log.Warnf("%s: error ensuring file %s: %v", c.name, p, err)
 					}

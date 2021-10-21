@@ -3,6 +3,7 @@ module example.com/p2pfs
 go 1.16
 
 require (
+	github.com/fsnotify/fsnotify v1.4.9 // indirect
 	github.com/hsanjuan/ipfs-lite v1.1.22
 	github.com/ipfs/go-cid v0.0.7
 	github.com/ipfs/go-ipfs v0.8.0
