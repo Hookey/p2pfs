@@ -18,8 +18,13 @@ import (
 	"github.com/textileio/go-threads/util"
 )
 
+var (
+	host = "127.0.0.0.1"
+)
+
 func TestMain(m *testing.M) {
 	_ = logging.SetLogLevel("foldersync", "debug")
+	_ = logging.SetLogLevel("watcher", "debug")
 	os.Exit(m.Run())
 }
 
@@ -28,7 +33,6 @@ func TestSimple(t *testing.T) {
 		t.Skip("Skipping foldersync tests")
 	}
 
-	host := "127.0.0.1"
 	id := thread.NewIDV1(thread.Raw, 32)
 
 	// db0
@@ -174,6 +178,7 @@ func TestNUsersBootstrap(t *testing.T) {
 		totalClients     int
 		totalCorePeers   int
 		syncTimeout      time.Duration
+		randDirsGen      int
 		randFilesGen     int
 		randFileSize     int
 		checkSyncedFiles bool
@@ -185,6 +190,7 @@ func TestNUsersBootstrap(t *testing.T) {
 
 		{totalClients: 2, totalCorePeers: 1, syncTimeout: time.Second * 20, randFilesGen: 4, randFileSize: 10},
 		{totalClients: 3, totalCorePeers: 2, syncTimeout: time.Second * 35, randFilesGen: 4, randFileSize: 10},
+		{totalClients: 3, totalCorePeers: 2, syncTimeout: time.Second * 35, randDirsGen: 4, randFileSize: 10},
 	}
 
 	for _, tt := range tests {
@@ -222,13 +228,34 @@ func TestNUsersBootstrap(t *testing.T) {
 			blk := make([]byte, tt.randFileSize)
 			for i := 0; i < tt.randFilesGen; i++ {
 				for j, c := range clients {
-					rf, err := ioutil.TempFile(path.Join(c.rootPath, c.name), fmt.Sprintf("client%d-", j))
+					fd, err := ioutil.TempFile(path.Join(c.rootPath, c.name), fmt.Sprintf("client%d-", j))
 					checkErr(t, err)
 					_, err = rand.Read(blk)
 					checkErr(t, err)
-					_, err = rf.Write(blk)
+					_, err = fd.Write(blk)
+					checkErr(t, err)
+					err = fd.Close()
 					checkErr(t, err)
 					time.Sleep(time.Millisecond * time.Duration(rand.Intn(300)))
+				}
+			}
+
+			for i := 0; i < tt.randDirsGen; i++ {
+				for j, c := range clients {
+					_, err := ioutil.TempDir(path.Join(c.rootPath, c.name), fmt.Sprintf("client%d-", j))
+					checkErr(t, err)
+					time.Sleep(time.Millisecond * time.Duration(rand.Intn(300)))
+
+					// TODO: fs watcher only monitor rootpath
+					/*fd, err := os.OpenFile(path+"/test", os.O_RDWR|os.O_CREATE|os.O_EXCL, 0600)
+					checkErr(t, err)
+					_, err = rand.Read(blk)
+					checkErr(t, err)
+					_, err = fd.Write(blk)
+					checkErr(t, err)
+					err = fd.Close()
+					checkErr(t, err)
+					time.Sleep(time.Millisecond * time.Duration(rand.Intn(300)))*/
 				}
 			}
 
@@ -271,7 +298,6 @@ func createRootClient(t *testing.T, name string) (*Client, func()) {
 	checkErr(t, err)
 	folderPath, err := ioutil.TempDir("", "")
 	checkErr(t, err)
-	host := "127.0.0.1"
 	client, err := newRootClient(name, folderPath, repoPath, host)
 	checkErr(t, err)
 	return client, func() {
@@ -289,7 +315,6 @@ func createJoinerClient(t *testing.T, name string, addr ma.Multiaddr, key thread
 	checkErr(t, err)
 	folderPath, err := ioutil.TempDir("", "")
 	checkErr(t, err)
-	host := "127.0.0.1"
 	client, err := newJoinerClient2(name, folderPath, repoPath, host, addr, key)
 	checkErr(t, err)
 	return client, func() {
