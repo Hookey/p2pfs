@@ -50,12 +50,13 @@ var (
 
 //TODO: determine to use object-like or tree-like schema
 type inode struct {
-	ID     core.InstanceID `json:"_id"`
-	Owner  string
-	Path   string
-	CID    string
-	IsDir  bool
-	IsRoot bool
+	ID      core.InstanceID `json:"_id"`
+	Owner   string
+	Path    string
+	CID     string
+	IsDir   bool
+	IsRoot  bool
+	IsExist bool
 	//TODO stat, ACL
 }
 
@@ -224,7 +225,7 @@ func (c *Client) getOrCreateRoot(path string) (*inode, error) {
 	}
 
 	if len(res) == 0 {
-		ownFolder := inode{ID: core.NewInstanceID(), Owner: c.name, IsDir: true, IsRoot: true}
+		ownFolder := inode{ID: core.NewInstanceID(), Owner: c.name, IsDir: true, IsRoot: true, IsExist: true}
 		jsn := util.JSONFromInstance(ownFolder)
 		_, err := c.collection.Create(jsn)
 		if err != nil {
@@ -265,19 +266,27 @@ func (c *Client) startListeningExternalChanges() error {
 				util.InstanceFromJSON(instanceBytes, n)
 
 				p := c.fullPath(n)
-				if n.IsDir {
-					log.Infof("%s: detected new dir %s of user %s", c.name, a.ID, n.Owner)
-					if err := os.MkdirAll(p, 0700); err != nil {
-						log.Warnf("%s: error ensuring file %s: %v", c.name, p, err)
+				if n.IsExist {
+					if n.IsDir {
+						log.Infof("%s: remote new dir %s", c.name, p, n.Owner)
+						if err := os.MkdirAll(p, 0700); err != nil {
+							log.Warnf("%s: error mkdir %s: %v", c.name, p, err)
+						}
+					} else {
+						log.Infof("%s: remote new file %s", c.name, p, n.Owner)
+						if err := c.ensureCID(p, n.CID); err != nil {
+							log.Warnf("%s: error ensuring file %s: %v", c.name, p, err)
+						}
 					}
 				} else {
-					log.Infof("%s: detected new file %s of user %s", c.name, a.ID, n.Owner)
-					if err := c.ensureCID(p, n.CID); err != nil {
-						log.Warnf("%s: error ensuring file %s: %v", c.name, p, err)
+					log.Infof("%s: remove %s", c.name, p, n.Owner)
+					if err := os.Remove(p); err != nil {
+						log.Warnf("%s: error remove %s: %v", c.name, p, err)
 					}
 				}
 
 				if inodes, err := c.getDirectoryTree(); err == nil {
+					fmt.Println("Tree of", c.name)
 					printTree(inodes)
 				}
 			}
@@ -302,8 +311,8 @@ func (c *Client) startFSWatcher() error {
 		} else if st.Mode().IsDir() {
 			path := strings.TrimPrefix(fullPath, c.rootPath)
 			path = strings.TrimLeft(path, "/")
-			d := inode{ID: core.NewInstanceID(), Path: path, IsDir: true}
-			log.Debugf("ID: %v", d.ID)
+			d := inode{ID: core.NewInstanceID(), Path: path, IsDir: true, IsExist: true}
+			log.Infof("%s: local new dir %s", c.name, path)
 			_, err = c.collection.Create(util.JSONFromInstance(d))
 			return err
 		} else if st.Mode().IsRegular() {
@@ -321,8 +330,8 @@ func (c *Client) startFSWatcher() error {
 
 			path := strings.TrimPrefix(fullPath, c.rootPath)
 			path = strings.TrimLeft(path, "/")
-			f := inode{ID: core.NewInstanceID(), Path: path, CID: n.Cid().String()}
-			log.Debugf("ID: %v", f.ID)
+			f := inode{ID: core.NewInstanceID(), Path: path, CID: n.Cid().String(), IsExist: true}
+			log.Infof("%s: local new file %s", c.name, path)
 			_, err = c.collection.Create(util.JSONFromInstance(f))
 			return err
 		} else {
@@ -331,7 +340,33 @@ func (c *Client) startFSWatcher() error {
 		}
 	}
 
-	w, err := watcher.New(myFolderPath, watcher.WithCreateHandler(onCreate))
+	onDelete := func(fullPath string) error {
+		path := strings.TrimPrefix(fullPath, c.rootPath)
+		path = strings.TrimLeft(path, "/")
+
+		res, err := c.collection.Find(db.Where("Path").Eq(path))
+		if err != nil {
+			return err
+		}
+
+		for _, r := range res {
+			n := &inode{}
+			if err := json.Unmarshal(r, n); err != nil {
+				log.Error(err)
+				continue
+			}
+
+			log.Infof("%s: local remove %s", c.name, path)
+			n.IsExist = false
+			if err := c.collection.Save(util.JSONFromInstance(n)); err != nil {
+				log.Error(err)
+			}
+		}
+
+		return nil
+	}
+
+	w, err := watcher.New(myFolderPath, watcher.WithCreateHandler(onCreate), watcher.WithDeleteHandler(onDelete))
 	if err != nil {
 		return fmt.Errorf("error when creating fs watcher for %v: %v", c.name, err)
 	}
@@ -453,9 +488,8 @@ func printTree(inodes []*inode) {
 		return strings.Compare(inodes[i].Path, inodes[j].Path) < 0
 	})
 
-	fmt.Printf("Tree of client \n")
 	for _, n := range inodes {
-		fmt.Printf("\t%s %s\n", n.Path, n.CID)
+		fmt.Printf("\tPath: %s, CID: %s, exist: %v\n", n.Path, n.CID, n.IsExist)
 	}
 	fmt.Println()
 }

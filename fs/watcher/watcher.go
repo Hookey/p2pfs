@@ -111,11 +111,18 @@ func (fw *FolderWatcher) Watch() {
 					return
 				}
 				if event.Op&fsnotify.Create == fsnotify.Create {
-					log.Debug("created file:", event.Name)
+					log.Debug("Created:", event.Name)
 
 					if err := fw.onCreate(event.Name); err != nil {
 						log.Errorf("error when calling onCreate for %s", event.Name)
 					}
+				} else if event.Op&fsnotify.Remove == fsnotify.Remove {
+					log.Debug("Removed:", event.Name)
+					if err := fw.onDelete(event.Name); err != nil {
+						log.Errorf("error when calling onDelete for %s", event.Name)
+					}
+				} else {
+					log.Debug(event.Op.String(), event.Name)
 				}
 			case err, ok := <-fw.w.Errors:
 				if !ok {
