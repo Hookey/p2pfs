@@ -177,20 +177,21 @@ func TestNUsersBootstrap(t *testing.T) {
 	tests := []struct {
 		totalClients     int
 		totalCorePeers   int
-		syncTimeout      time.Duration
+		syncTimeout      int
 		randDirsGen      int
 		randFilesGen     int
 		randFileSize     int
+		randRm           int
 		checkSyncedFiles bool
 	}{
-		{totalClients: 2, totalCorePeers: 1, syncTimeout: time.Second * 15},
-		{totalClients: 3, totalCorePeers: 1, syncTimeout: time.Second * 30},
+		{totalClients: 2, totalCorePeers: 1, syncTimeout: 15},
+		{totalClients: 3, totalCorePeers: 1, syncTimeout: 30},
 
-		{totalClients: 3, totalCorePeers: 2, syncTimeout: time.Second * 35},
+		{totalClients: 3, totalCorePeers: 2, syncTimeout: 35},
 
-		{totalClients: 2, totalCorePeers: 1, syncTimeout: time.Second * 20, randFilesGen: 4, randFileSize: 10},
-		{totalClients: 3, totalCorePeers: 2, syncTimeout: time.Second * 35, randFilesGen: 4, randFileSize: 10},
-		{totalClients: 3, totalCorePeers: 2, syncTimeout: time.Second * 35, randDirsGen: 4, randFileSize: 10},
+		{totalClients: 2, totalCorePeers: 1, syncTimeout: 20, randFilesGen: 4, randFileSize: 10},
+		{totalClients: 3, totalCorePeers: 2, syncTimeout: 35, randFilesGen: 4, randFileSize: 10},
+		{totalClients: 3, totalCorePeers: 2, syncTimeout: 35, randDirsGen: 2, randRm: 1},
 	}
 
 	for _, tt := range tests {
@@ -228,7 +229,8 @@ func TestNUsersBootstrap(t *testing.T) {
 			blk := make([]byte, tt.randFileSize)
 			for i := 0; i < tt.randFilesGen; i++ {
 				for j, c := range clients {
-					fd, err := ioutil.TempFile(path.Join(c.rootPath, c.name), fmt.Sprintf("client%d-", j))
+					prefix := path.Join(c.rootPath, c.name)
+					fd, err := ioutil.TempFile(prefix, fmt.Sprintf("client%d-", j))
 					checkErr(t, err)
 					_, err = rand.Read(blk)
 					checkErr(t, err)
@@ -242,7 +244,8 @@ func TestNUsersBootstrap(t *testing.T) {
 
 			for i := 0; i < tt.randDirsGen; i++ {
 				for j, c := range clients {
-					_, err := ioutil.TempDir(path.Join(c.rootPath, c.name), fmt.Sprintf("client%d-", j))
+					prefix := path.Join(c.rootPath, c.name)
+					_, err := ioutil.TempDir(prefix, fmt.Sprintf("client%d-", j))
 					checkErr(t, err)
 					time.Sleep(time.Millisecond * time.Duration(rand.Intn(300)))
 
@@ -259,13 +262,50 @@ func TestNUsersBootstrap(t *testing.T) {
 				}
 			}
 
-			time.Sleep(tt.syncTimeout)
-			assertClientsEqualTrees(t, clients)
+			i := 0
+			for ; i < tt.syncTimeout; i++ {
+				time.Sleep(time.Second)
+				if checkClientsEqualTrees(t, clients) {
+					break
+				}
+			}
+
+			if i == tt.syncTimeout {
+				t.Fatalf("trees from clients aren't equal")
+			}
+
+			if tt.randRm != 0 {
+				for i = 0; i < tt.randRm; i++ {
+					for _, c := range clients {
+						prefix := path.Join(c.rootPath, c.name)
+						dirs, err := os.ReadDir(prefix)
+						checkErr(t, err)
+						if len(dirs) > 0 {
+							fmt.Println("remove ", path.Join(prefix, dirs[0].Name()))
+							err := os.Remove(path.Join(prefix, dirs[0].Name()))
+							checkErr(t, err)
+							time.Sleep(time.Millisecond * time.Duration(rand.Intn(300)))
+						}
+					}
+				}
+
+				i = 0
+				for ; i < tt.syncTimeout; i++ {
+					time.Sleep(time.Second)
+					if checkClientsEqualTrees(t, clients) {
+						break
+					}
+				}
+
+				if i == tt.syncTimeout {
+					t.Fatalf("trees from clients aren't equal")
+				}
+			}
 		})
 	}
 }
 
-func assertClientsEqualTrees(t *testing.T, clients []*Client) {
+func checkClientsEqualTrees(t *testing.T, clients []*Client) bool {
 	totalClients := len(clients)
 	trees := make([][]*inode, totalClients)
 	for i := 0; i < totalClients; i++ {
@@ -274,9 +314,7 @@ func assertClientsEqualTrees(t *testing.T, clients []*Client) {
 		trees[i] = tree
 	}
 
-	if !equalTrees(trees) {
-		t.Fatalf("trees from clients aren't equal")
-	}
+	return equalTrees(trees)
 }
 
 func equalTrees(trees [][]*inode) bool {
