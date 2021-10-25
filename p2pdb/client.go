@@ -84,6 +84,7 @@ func newClient(whoami, mount, repo, host, taddr, tid, tkey string) (*Client, err
 	}
 }
 
+// TODO: can open existing badger db
 func newRootClient(name, folderPath, repoPath, host string) (*Client, error) {
 	id := thread.NewIDV1(thread.Raw, 32)
 
@@ -210,6 +211,7 @@ func (c *Client) getDBInfo() (db.Info, error) {
 }
 
 // TODO: when create a new client to a existing thread, should sync db first.
+// Actually, dont need root?
 func (c *Client) getOrCreateRoot(path string) (*inode, error) {
 	if _, err := os.Stat(path); os.IsNotExist(err) {
 		if err = os.MkdirAll(path, os.ModePerm); err != nil {
@@ -354,11 +356,37 @@ func (c *Client) startFSWatcher() error {
 		} else if st.Mode().IsDir() {
 			path := strings.TrimPrefix(fullPath, c.rootPath)
 			path = strings.TrimLeft(path, "/")
+
+			res, err := c.collection.Find(db.Where("Path").Eq(path))
+			if err != nil {
+				log.Error(err)
+				return err
+			}
+
+			if len(res) > 0 {
+				// This is remote create event
+				return nil
+			}
+
 			d := inode{ID: core.NewInstanceID(), Path: path, IsDir: true, IsExist: true}
 			log.Infof("%s: local new dir %s", c.name, path)
 			_, err = c.collection.Create(util.JSONFromInstance(d))
 			return err
 		} else if st.Mode().IsRegular() {
+			path := strings.TrimPrefix(fullPath, c.rootPath)
+			path = strings.TrimLeft(path, "/")
+
+			res, err := c.collection.Find(db.Where("Path").Eq(path))
+			if err != nil {
+				log.Error(err)
+				return err
+			}
+
+			if len(res) > 0 {
+				// This is remote create event
+				return nil
+			}
+
 			fd, err := os.Open(fullPath)
 			if err != nil {
 				log.Error(err)
@@ -372,8 +400,6 @@ func (c *Client) startFSWatcher() error {
 				return err
 			}
 
-			path := strings.TrimPrefix(fullPath, c.rootPath)
-			path = strings.TrimLeft(path, "/")
 			i := inode{ID: core.NewInstanceID(), Path: path, CID: n.Cid().String(), IsExist: true}
 			log.Infof("%s: local new file %s", c.name, path)
 			_, err = c.collection.Create(util.JSONFromInstance(i))
