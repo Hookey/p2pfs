@@ -58,8 +58,9 @@ func main() {
 	if disconnect, err := p2pdb.Connect(*whoami, *notifyPath, *repoPath, *host, *taddrStr, *tidStr, *tkeyStr); err != nil {
 		log.Error(err)
 		return
+	} else {
+		defer disconnect()
 	}
-	defer disconnect()
 
 	sigs := make(chan os.Signal, 1)
 	done := make(chan bool, 1)
