@@ -317,15 +317,26 @@ func checkClientsEqualTrees(t *testing.T, clients []*Client) bool {
 	return equalTrees(trees)
 }
 
+func equalInode(i1, i2 *inode) bool {
+	return i1.ID == i2.ID && i1.CID == i2.CID && i1.Path == i2.Path
+}
+
 func equalTrees(trees [][]*inode) bool {
-	base := trees[0]
+	baseTree := trees[0]
 
 	for i := 1; i < len(trees); i++ {
-		if len(base) != len(trees[i]) {
+		t := trees[i]
+		if len(baseTree) != len(t) {
 			return false
 		}
 
-		//TODO: deep check
+		// Meta check
+		for j := 0; j < len(t); j++ {
+			if !equalInode(baseTree[j], t[j]) {
+				return false
+			}
+		}
+		// TODO: Need data Check?
 	}
 
 	return true
