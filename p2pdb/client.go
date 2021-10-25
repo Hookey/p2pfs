@@ -304,6 +304,49 @@ func (c *Client) startFSWatcher() error {
 	//TODO: c.root may be unnecessary
 	c.root = myFolder
 
+	onWrite := func(fullPath string) error {
+		fd, err := os.Open(fullPath)
+		if err != nil {
+			log.Error(err)
+			return err
+		}
+		defer fd.Close()
+
+		n, err := c.peer.AddFile(context.Background(), fd, nil)
+		if err != nil {
+			log.Error(err)
+			return err
+		}
+
+		path := strings.TrimPrefix(fullPath, c.rootPath)
+		path = strings.TrimLeft(path, "/")
+
+		res, err := c.collection.Find(db.Where("Path").Eq(path))
+		if err != nil {
+			log.Error(err)
+			return err
+		}
+
+		if len(res) == 0 {
+			log.Warnf("Meta %s not found", path)
+			return nil
+		}
+		i := &inode{}
+		if err := json.Unmarshal(res[0], i); err != nil {
+			log.Error(err)
+			return err
+		}
+
+		log.Infof("%s: local update %s, %v", c.name, path, i)
+		i.CID = n.Cid().String()
+		if err := c.collection.Save(util.JSONFromInstance(i)); err != nil {
+			log.Error(err)
+			return err
+		}
+
+		return nil
+	}
+
 	onCreate := func(fullPath string) error {
 		if st, err := os.Stat(fullPath); err != nil {
 			log.Error(err)
@@ -321,6 +364,7 @@ func (c *Client) startFSWatcher() error {
 				log.Error(err)
 				return err
 			}
+			defer fd.Close()
 
 			n, err := c.peer.AddFile(context.Background(), fd, nil)
 			if err != nil {
@@ -330,9 +374,9 @@ func (c *Client) startFSWatcher() error {
 
 			path := strings.TrimPrefix(fullPath, c.rootPath)
 			path = strings.TrimLeft(path, "/")
-			f := inode{ID: core.NewInstanceID(), Path: path, CID: n.Cid().String(), IsExist: true}
+			i := inode{ID: core.NewInstanceID(), Path: path, CID: n.Cid().String(), IsExist: true}
 			log.Infof("%s: local new file %s", c.name, path)
-			_, err = c.collection.Create(util.JSONFromInstance(f))
+			_, err = c.collection.Create(util.JSONFromInstance(i))
 			return err
 		} else {
 			err := fmt.Errorf("not support filetype %v", st.Mode())
@@ -350,15 +394,15 @@ func (c *Client) startFSWatcher() error {
 		}
 
 		for _, r := range res {
-			n := &inode{}
-			if err := json.Unmarshal(r, n); err != nil {
+			i := &inode{}
+			if err := json.Unmarshal(r, i); err != nil {
 				log.Error(err)
 				continue
 			}
 
 			log.Infof("%s: local remove %s", c.name, path)
-			n.IsExist = false
-			if err := c.collection.Save(util.JSONFromInstance(n)); err != nil {
+			i.IsExist = false
+			if err := c.collection.Save(util.JSONFromInstance(i)); err != nil {
 				log.Error(err)
 			}
 		}
@@ -366,7 +410,7 @@ func (c *Client) startFSWatcher() error {
 		return nil
 	}
 
-	w, err := watcher.New(myFolderPath, watcher.WithCreateHandler(onCreate), watcher.WithDeleteHandler(onDelete))
+	w, err := watcher.New(myFolderPath, watcher.WithCreateHandler(onCreate), watcher.WithDeleteHandler(onDelete), watcher.WithWriteHandler(onWrite))
 	if err != nil {
 		return fmt.Errorf("error when creating fs watcher for %v: %v", c.name, err)
 	}
@@ -412,6 +456,11 @@ func (c *Client) getDirectoryTree() ([]*inode, error) {
 		}
 		inodes[i] = inode
 	}
+
+	sort.Slice(inodes, func(i, j int) bool {
+		return strings.Compare(inodes[i].Path, inodes[j].Path) < 0
+	})
+
 	return inodes, nil
 }
 
@@ -484,10 +533,6 @@ func (c *Client) close() error {
 }
 
 func printTree(inodes []*inode) {
-	sort.Slice(inodes, func(i, j int) bool {
-		return strings.Compare(inodes[i].Path, inodes[j].Path) < 0
-	})
-
 	for _, n := range inodes {
 		fmt.Printf("\tPath: %s, CID: %s, exist: %v\n", n.Path, n.CID, n.IsExist)
 	}

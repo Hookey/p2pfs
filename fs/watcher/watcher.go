@@ -121,6 +121,11 @@ func (fw *FolderWatcher) Watch() {
 					if err := fw.onDelete(event.Name); err != nil {
 						log.Errorf("error when calling onDelete for %s", event.Name)
 					}
+				} else if event.Op&fsnotify.Write == fsnotify.Write {
+					log.Debug("Written:", event.Name)
+					if err := fw.onWrite(event.Name); err != nil {
+						log.Errorf("error when calling onWrite for %s", event.Name)
+					}
 				} else {
 					log.Debug(event.Op.String(), event.Name)
 				}

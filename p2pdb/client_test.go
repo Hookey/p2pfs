@@ -229,6 +229,7 @@ func TestNUsersBootstrap(t *testing.T) {
 			blk := make([]byte, tt.randFileSize)
 			for i := 0; i < tt.randFilesGen; i++ {
 				for j, c := range clients {
+					//Test create events
 					prefix := path.Join(c.rootPath, c.name)
 					fd, err := ioutil.TempFile(prefix, fmt.Sprintf("client%d-", j))
 					checkErr(t, err)
@@ -236,14 +237,20 @@ func TestNUsersBootstrap(t *testing.T) {
 					checkErr(t, err)
 					_, err = fd.Write(blk)
 					checkErr(t, err)
+					time.Sleep(time.Millisecond * time.Duration(rand.Intn(300)))
+					//Test write events
+					_, err = rand.Read(blk)
+					checkErr(t, err)
+					_, err = fd.Write(blk)
+					checkErr(t, err)
 					err = fd.Close()
 					checkErr(t, err)
-					time.Sleep(time.Millisecond * time.Duration(rand.Intn(300)))
 				}
 			}
 
 			for i := 0; i < tt.randDirsGen; i++ {
 				for j, c := range clients {
+					//Test create events
 					prefix := path.Join(c.rootPath, c.name)
 					_, err := ioutil.TempDir(prefix, fmt.Sprintf("client%d-", j))
 					checkErr(t, err)
@@ -277,6 +284,7 @@ func TestNUsersBootstrap(t *testing.T) {
 			if tt.randRm != 0 {
 				for i = 0; i < tt.randRm; i++ {
 					for _, c := range clients {
+						//Test remove events
 						prefix := path.Join(c.rootPath, c.name)
 						dirs, err := os.ReadDir(prefix)
 						checkErr(t, err)
