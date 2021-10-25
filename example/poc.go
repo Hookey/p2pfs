@@ -50,7 +50,9 @@ func main() {
 	}
 
 	if err := util.SetLogLevels(map[string]logging.LogLevel{
-		"main": util.LevelFromDebugFlag(*debug),
+		"main":       util.LevelFromDebugFlag(*debug),
+		"foldersync": util.LevelFromDebugFlag(*debug),
+		"watcher":    util.LevelFromDebugFlag(*debug),
 	}); err != nil {
 		log.Fatal(err)
 	}
