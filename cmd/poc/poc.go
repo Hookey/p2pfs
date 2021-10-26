@@ -13,7 +13,7 @@ import (
 
 	logging "github.com/ipfs/go-log/v2"
 
-	"example.com/p2pfs/p2pdb"
+	p2pdb "example.com/p2pfs/p2pdb/poc"
 	"github.com/textileio/go-threads/util"
 )
 

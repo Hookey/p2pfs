@@ -1,4 +1,4 @@
-package p2pdb
+package poc
 
 import (
 	"context"
@@ -357,6 +357,7 @@ func (c *Client) startFSWatcher() error {
 			path := strings.TrimPrefix(fullPath, c.rootPath)
 			path = strings.TrimLeft(path, "/")
 
+			// TODO: Handle delete A, create A sequence, judge isExist field
 			res, err := c.collection.Find(db.Where("Path").Eq(path))
 			if err != nil {
 				log.Error(err)
@@ -499,6 +500,7 @@ func (c *Client) ensureCID(fullPath, cidStr string) error {
 	if err != nil {
 		return err
 	}
+	//TODO: remove stat check because we may want to update content
 	_, err = os.Stat(fullPath)
 	if err == nil {
 		return nil
